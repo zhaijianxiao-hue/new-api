@@ -38,6 +38,116 @@ func stringDeltaFromPrefix(prev string, next string) string {
 	return next
 }
 
+func responsesRequestDebug(info *relaycommon.RelayInfo) map[string]interface{} {
+	if info == nil {
+		return nil
+	}
+	if info.RequestDebug == nil {
+		info.RequestDebug = make(map[string]interface{})
+	}
+	return info.RequestDebug
+}
+
+func incrementResponsesDebugInt(debug map[string]interface{}, key string) {
+	if debug == nil {
+		return
+	}
+	count, _ := debug[key].(int)
+	debug[key] = count + 1
+}
+
+func appendResponsesDebugString(debug map[string]interface{}, key string, value string, max int) {
+	if debug == nil || value == "" {
+		return
+	}
+	values, _ := debug[key].([]string)
+	if len(values) >= max {
+		return
+	}
+	debug[key] = append(values, value)
+}
+
+func recordResponsesOutputItemDebug(info *relaycommon.RelayInfo, eventType string, item *dto.ResponsesOutput) {
+	if item == nil {
+		return
+	}
+	debug := responsesRequestDebug(info)
+	if debug == nil {
+		return
+	}
+	incrementResponsesDebugInt(debug, "responses_stream_output_item_events")
+	appendResponsesDebugString(debug, "responses_stream_output_item_event_types", eventType, 32)
+	appendResponsesDebugString(debug, "responses_stream_output_item_types", item.Type, 32)
+	appendResponsesDebugString(debug, "responses_stream_output_item_statuses", item.Status, 32)
+	switch item.Type {
+	case "function_call":
+		incrementResponsesDebugInt(debug, "responses_stream_output_item_function_calls")
+	case "message":
+		incrementResponsesDebugInt(debug, "responses_stream_output_item_messages")
+	}
+}
+
+func recordResponsesCompletionDebug(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse, sawToolCall bool, outputTextBytes int) {
+	if response == nil {
+		return
+	}
+	debug := responsesRequestDebug(info)
+	if debug == nil {
+		return
+	}
+
+	if status := common.JsonRawMessageToString(response.Status); status != "" {
+		debug["responses_completed_status"] = status
+	}
+	if response.IncompleteDetails != nil {
+		if response.IncompleteDetails.Reason != "" {
+			debug["responses_incomplete_reason"] = response.IncompleteDetails.Reason
+		}
+		if response.IncompleteDetails.Reasoning != "" {
+			debug["responses_incomplete_reasoning"] = response.IncompleteDetails.Reasoning
+		}
+	}
+	debug["responses_stream_saw_tool_call"] = sawToolCall
+	debug["responses_stream_output_text_bytes"] = outputTextBytes
+	debug["responses_output_items"] = len(response.Output)
+
+	outputTypes := make([]string, 0, len(response.Output))
+	outputStatuses := make([]string, 0, len(response.Output))
+	functionCalls := 0
+	messageItems := 0
+	for _, item := range response.Output {
+		if item.Type != "" {
+			outputTypes = append(outputTypes, item.Type)
+		}
+		if item.Status != "" {
+			outputStatuses = append(outputStatuses, item.Status)
+		}
+		switch item.Type {
+		case "function_call":
+			functionCalls++
+		case "message":
+			messageItems++
+		}
+	}
+	if len(outputTypes) > 0 {
+		debug["responses_output_types"] = outputTypes
+	}
+	if len(outputStatuses) > 0 {
+		debug["responses_output_statuses"] = outputStatuses
+	}
+	debug["responses_output_function_calls"] = functionCalls
+	debug["responses_output_messages"] = messageItems
+
+	if response.Usage != nil {
+		debug["responses_usage_input_tokens"] = response.Usage.InputTokens
+		debug["responses_usage_output_tokens"] = response.Usage.OutputTokens
+		debug["responses_usage_total_tokens"] = response.Usage.TotalTokens
+		if response.Usage.CompletionTokenDetails.ReasoningTokens != 0 {
+			debug["responses_usage_reasoning_tokens"] = response.Usage.CompletionTokenDetails.ReasoningTokens
+		}
+	}
+}
+
 func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -234,10 +344,6 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if callID == "" {
 			return true
 		}
-		if outputText.Len() > 0 {
-			// Prefer streaming assistant text over tool calls to match non-stream behavior.
-			return true
-		}
 		if !sendStartIfNeeded() {
 			return false
 		}
@@ -391,6 +497,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			if streamResp.Item == nil {
 				break
 			}
+			recordResponsesOutputItemDebug(info, streamResp.Type, streamResp.Item)
 			if streamResp.Item.Type != "function_call" {
 				break
 			}
@@ -473,6 +580,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 						usage.CompletionTokenDetails.ReasoningTokens = streamResp.Response.Usage.CompletionTokenDetails.ReasoningTokens
 					}
 				}
+				recordResponsesCompletionDebug(info, streamResp.Response, sawToolCall, outputText.Len())
 			}
 
 			if !sendStartIfNeeded() {
@@ -484,7 +592,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 					info.ClaudeConvertInfo.Usage = usage
 				}
 				finishReason := "stop"
-				if sawToolCall && outputText.Len() == 0 {
+				if sawToolCall {
 					finishReason = "tool_calls"
 				}
 				stop := helper.GenerateStopResponse(responseId, createAt, model, finishReason)
@@ -529,7 +637,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			info.ClaudeConvertInfo.Usage = usage
 		}
 		finishReason := "stop"
-		if sawToolCall && outputText.Len() == 0 {
+		if sawToolCall {
 			finishReason = "tool_calls"
 		}
 		stop := helper.GenerateStopResponse(responseId, createAt, model, finishReason)

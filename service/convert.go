@@ -58,6 +58,11 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 			openAIRequest.Reasoning = reasoningJSON
 		}
 	} else {
+		if info.ChannelType == constant.ChannelTypeCodex {
+			if effort := claudeRequest.GetEfforts(); effort != "" {
+				openAIRequest.ReasoningEffort = effort
+			}
+		}
 		thinkingSuffix := "-thinking"
 		if strings.HasSuffix(info.OriginModelName, thinkingSuffix) &&
 			!strings.HasSuffix(openAIRequest.Model, thinkingSuffix) {
@@ -212,8 +217,55 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 	}
 
 	openAIRequest.Messages = openAIMessages
+	setClaudeRequestDebug(info, claudeRequest, &openAIRequest, len(tools))
 
 	return &openAIRequest, nil
+}
+
+func setClaudeRequestDebug(info *relaycommon.RelayInfo, claudeRequest dto.ClaudeRequest, openAIRequest *dto.GeneralOpenAIRequest, toolCount int) {
+	if info == nil || openAIRequest == nil || info.ChannelType != constant.ChannelTypeCodex {
+		return
+	}
+	if info.RequestDebug == nil {
+		info.RequestDebug = make(map[string]interface{})
+	}
+	debug := info.RequestDebug
+	debug["claude_messages"] = len(claudeRequest.Messages)
+	debug["claude_stop_sequences"] = len(claudeRequest.StopSequences)
+	debug["claude_tools"] = toolCount
+	debug["openai_messages"] = len(openAIRequest.Messages)
+	debug["openai_tools"] = len(openAIRequest.Tools)
+	if claudeRequest.MaxTokens != nil {
+		debug["claude_max_tokens"] = *claudeRequest.MaxTokens
+	}
+	if openAIRequest.MaxTokens != nil {
+		debug["openai_max_tokens"] = *openAIRequest.MaxTokens
+	}
+	if effort := claudeRequest.GetEfforts(); effort != "" {
+		debug["claude_output_effort"] = effort
+	}
+	if openAIRequest.ReasoningEffort != "" {
+		debug["openai_reasoning_effort"] = openAIRequest.ReasoningEffort
+	}
+	if claudeRequest.ToolChoice != nil {
+		debug["claude_tool_choice"] = compactDebugJSON(claudeRequest.ToolChoice)
+	}
+	if claudeRequest.Thinking != nil {
+		debug["claude_thinking_type"] = claudeRequest.Thinking.Type
+		debug["claude_thinking_budget_tokens"] = claudeRequest.Thinking.GetBudgetTokens()
+	}
+}
+
+func compactDebugJSON(v any) string {
+	data, err := common.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	const maxDebugJSONLen = 240
+	if len(data) > maxDebugJSONLen {
+		data = data[:maxDebugJSONLen]
+	}
+	return string(data)
 }
 
 func generateStopBlock(index int) *dto.ClaudeResponse {
@@ -470,7 +522,9 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 				oaiUsage = info.ClaudeConvertInfo.Usage
 				// Some upstreams emit finish_reason first, then send a final usage-only chunk.
 				// Defer closing until usage is available so the final message_delta carries it.
-				return claudeResponses
+				if oaiUsage == nil {
+					return claudeResponses
+				}
 			}
 		}
 

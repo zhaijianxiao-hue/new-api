@@ -78,8 +78,16 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
+	appendRequestDebug(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func appendRequestDebug(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil || len(relayInfo.RequestDebug) == 0 {
+		return
+	}
+	other["request_debug"] = relayInfo.RequestDebug
 }
 
 func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {

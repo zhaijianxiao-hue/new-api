@@ -54,6 +54,18 @@ web/             — Frontend themes container
 
 ## Rules
 
+### New Session Bootstrap
+
+When working on Codex (OpenAI OAuth), Claude Code, Cherry Studio, or agent calls
+through the Codex channel, read `docs/codex-stream-compat.md` first. The Codex
+upstream requires streaming; the gateway must force both the upstream
+`stream=true` request field and the internal relay stream state. Do not rely only
+on channel `param_override` for this. Claude-compatible streams must also include
+the closing SSE events `content_block_stop`, `message_delta`, and `message_stop`;
+otherwise Claude Code can report a malformed HTTP 200 response. Codex Responses
+may emit assistant text before `function_call` items; preserve those tool calls
+and finish with `tool_calls` so Claude Code receives `stop_reason: tool_use`.
+
 ### Rule 1: JSON Package — Use `common/json.go`
 
 All JSON marshal/unmarshal operations MUST use the wrapper functions in `common/json.go`:

@@ -97,6 +97,8 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	if err != nil {
 		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
+	forceResponsesStreamIfRequired(info, responsesReq)
+	recordResponsesRequestDebug(info, responsesReq)
 	info.AppendRequestConversion(types.RelayFormatOpenAIResponses)
 
 	savedRelayMode := info.RelayMode
@@ -161,4 +163,30 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		return nil, newApiErr
 	}
 	return usage, nil
+}
+
+func forceResponsesStreamIfRequired(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
+	if info == nil || request == nil || info.ChannelType != constant.ChannelTypeCodex {
+		return
+	}
+	request.Stream = common.GetPointer(true)
+	info.IsStream = true
+}
+
+func recordResponsesRequestDebug(info *relaycommon.RelayInfo, request *dto.OpenAIResponsesRequest) {
+	if info == nil || request == nil || info.ChannelType != constant.ChannelTypeCodex {
+		return
+	}
+	if info.RequestDebug == nil {
+		info.RequestDebug = make(map[string]interface{})
+	}
+	debug := info.RequestDebug
+	if request.MaxOutputTokens != nil {
+		debug["responses_max_output_tokens"] = *request.MaxOutputTokens
+	}
+	debug["responses_tools_bytes"] = len(request.Tools)
+	debug["responses_tool_choice_bytes"] = len(request.ToolChoice)
+	if len(request.Truncation) > 0 {
+		debug["responses_truncation"] = string(request.Truncation)
+	}
 }
